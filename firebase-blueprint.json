@@ -1,0 +1,66 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "App user information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "name": { "type": "string" },
+        "role": { "type": "string", "enum": ["teacher", "student"] }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "WordSet": {
+      "title": "WordSet",
+      "description": "A collection of vocabulary words",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "teacherId": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "words": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "word": { "type": "string" },
+              "meaning": { "type": "string" }
+            }
+          }
+        }
+      },
+      "required": ["title", "teacherId", "words"]
+    },
+    "Result": {
+      "title": "Result",
+      "description": "Student quiz results",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "studentName": { "type": "string" },
+        "wordSetId": { "type": "string" },
+        "wordSetTitle": { "type": "string" },
+        "score": { "type": "number" },
+        "total": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["studentId", "wordSetId", "score", "total"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/wordSets/{setId}": {
+      "schema": "WordSet",
+      "description": "Vocabulary sets"
+    },
+    "/results/{resultId}": {
+      "schema": "Result",
+      "description": "Quiz results"
+    }
+  }
+}
