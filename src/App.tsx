@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -17,6 +17,7 @@ import {
   setDoc, 
   getDoc, 
   addDoc, 
+  updateDoc,
   onSnapshot, 
   query, 
   orderBy,
@@ -36,9 +37,13 @@ import {
   Trophy,
   ArrowLeft,
   Trash2,
-  FileText
+  FileText,
+  Edit2,
+  Upload,
+  Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import * as XLSX from 'xlsx';
 
 // --- Types ---
 
@@ -117,8 +122,9 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<'dashboard' | 'create' | 'quiz' | 'results'>('dashboard');
+  const [view, setView] = useState<'dashboard' | 'form' | 'quiz' | 'results'>('dashboard');
   const [selectedSet, setSelectedSet] = useState<WordSet | null>(null);
+  const [editingSet, setEditingSet] = useState<WordSet | null>(null);
   const [wordSets, setWordSets] = useState<WordSet[]>([]);
   const [results, setResults] = useState<QuizResult[]>([]);
 
@@ -255,14 +261,16 @@ export default function App() {
               profile={profile} 
               wordSets={wordSets} 
               results={results}
-              onAdd={() => setView('create')} 
+              onAdd={() => { setEditingSet(null); setView('form'); }} 
+              onEdit={(set: WordSet) => { setEditingSet(set); setView('form'); }}
               onQuiz={(set: WordSet) => { setSelectedSet(set); setView('quiz'); }}
               onViewResults={(set: WordSet) => { setSelectedSet(set); setView('results'); }}
             />
           )}
-          {view === 'create' && (
-            <CreateWordSet 
+          {view === 'form' && (
+            <WordSetForm 
               userId={user.uid} 
+              editingSet={editingSet}
               onBack={() => setView('dashboard')} 
             />
           )}
@@ -289,7 +297,7 @@ export default function App() {
 
 // --- Dashboard Component ---
 
-function Dashboard({ profile, wordSets, results, onAdd, onQuiz, onViewResults }: any) {
+function Dashboard({ profile, wordSets, results, onAdd, onEdit, onQuiz, onViewResults }: any) {
   const isTeacher = profile.role === 'teacher';
   
   return (
@@ -346,13 +354,22 @@ function Dashboard({ profile, wordSets, results, onAdd, onQuiz, onViewResults }:
                   </div>
                   <div className="flex items-center gap-2">
                     {isTeacher ? (
-                      <button 
-                        onClick={() => onViewResults(set)}
-                        className="p-2 hover:bg-stone-100 rounded-xl text-stone-400 hover:text-stone-900 transition-all"
-                        title="결과 보기"
-                      >
-                        <BarChart3 className="w-5 h-5" />
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => onEdit(set)}
+                          className="p-2 hover:bg-stone-100 rounded-xl text-stone-400 hover:text-emerald-600 transition-all"
+                          title="수정하기"
+                        >
+                          <Edit2 className="w-5 h-5" />
+                        </button>
+                        <button 
+                          onClick={() => onViewResults(set)}
+                          className="p-2 hover:bg-stone-100 rounded-xl text-stone-400 hover:text-stone-900 transition-all"
+                          title="결과 보기"
+                        >
+                          <BarChart3 className="w-5 h-5" />
+                        </button>
+                      </div>
                     ) : (
                       <button 
                         onClick={() => onQuiz(set)}
@@ -407,12 +424,13 @@ function Dashboard({ profile, wordSets, results, onAdd, onQuiz, onViewResults }:
   );
 }
 
-// --- Create Word Set Component ---
+// --- WordSet Form Component (Create/Edit) ---
 
-function CreateWordSet({ userId, onBack }: any) {
-  const [title, setTitle] = useState('');
-  const [words, setWords] = useState<Word[]>([{ word: '', meaning: '' }]);
+function WordSetForm({ userId, editingSet, onBack }: any) {
+  const [title, setTitle] = useState(editingSet?.title || '');
+  const [words, setWords] = useState<Word[]>(editingSet?.words || [{ word: '', meaning: '' }]);
   const [loading, setLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addWord = () => setWords([...words, { word: '', meaning: '' }]);
   const removeWord = (index: number) => setWords(words.filter((_, i) => i !== index));
@@ -422,25 +440,101 @@ function CreateWordSet({ userId, onBack }: any) {
     setWords(newWords);
   };
 
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'array' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
+
+        // Assume format: Column A = Word, Column B = Meaning
+        const importedWords: Word[] = data
+          .filter(row => row && row.length >= 2 && row[0] && row[1])
+          .map(row => ({
+            word: String(row[0]).trim(),
+            meaning: String(row[1]).trim()
+          }))
+          .filter(w => !['word', 'meaning', '단어', '뜻'].includes(w.word.toLowerCase()));
+
+        if (importedWords.length > 0) {
+          // If the first row is empty, replace it, otherwise append
+          setWords(prev => {
+            if (prev.length === 1 && !prev[0].word && !prev[0].meaning) {
+              return importedWords;
+            }
+            return [...prev, ...importedWords];
+          });
+        }
+      } catch (err) {
+        console.error("Excel parsing error", err);
+        alert("엑셀 파일을 읽는 중 오류가 발생했습니다. 파일 형식을 확인해주세요.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   const handleSave = async () => {
-    if (!title || words.some(w => !w.word || !w.meaning)) {
-      alert("제목과 모든 단어/뜻을 입력해주세요.");
+    // Filter out empty rows before validation
+    const validWords = words.filter(w => w.word.trim() !== '' && w.meaning.trim() !== '');
+
+    if (!title.trim()) {
+      alert("단어장 제목을 입력해주세요.");
       return;
     }
+
+    if (validWords.length === 0) {
+      alert("최소 하나 이상의 단어를 입력해주세요.");
+      return;
+    }
+
     setLoading(true);
     try {
-      await addDoc(collection(db, 'wordSets'), {
-        title,
-        teacherId: userId,
-        words,
-        createdAt: serverTimestamp()
-      });
+      // Ensure plain objects for Firestore and clean data
+      const wordsToSave = validWords.map(w => ({
+        word: w.word.trim(),
+        meaning: w.meaning.trim()
+      }));
+
+      if (editingSet) {
+        await updateDoc(doc(db, 'wordSets', editingSet.id), {
+          title: title.trim(),
+          words: wordsToSave,
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        await addDoc(collection(db, 'wordSets'), {
+          title: title.trim(),
+          teacherId: userId,
+          words: wordsToSave,
+          createdAt: serverTimestamp()
+        });
+      }
       onBack();
-    } catch (error) {
+    } catch (error: any) {
       console.error("Save failed", error);
+      alert("저장 중 오류가 발생했습니다: " + (error.message || "알 수 없는 오류"));
     } finally {
       setLoading(false);
     }
+  };
+
+  const downloadSample = () => {
+    const ws = XLSX.utils.aoa_to_sheet([
+      ['Word', 'Meaning'],
+      ['apple', '사과'],
+      ['banana', '바나나'],
+      ['computer', '컴퓨터']
+    ]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Sample");
+    XLSX.writeFile(wb, "voca_sample.xlsx");
   };
 
   return (
@@ -450,11 +544,38 @@ function CreateWordSet({ userId, onBack }: any) {
       exit={{ opacity: 0, x: -20 }}
       className="max-w-3xl mx-auto space-y-6"
     >
-      <div className="flex items-center gap-4">
-        <button onClick={onBack} className="p-2 hover:bg-stone-100 rounded-full transition-colors">
-          <ArrowLeft className="w-6 h-6" />
-        </button>
-        <h2 className="text-2xl font-bold text-stone-900">새 단어장 만들기</h2>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <button onClick={onBack} className="p-2 hover:bg-stone-100 rounded-full transition-colors">
+            <ArrowLeft className="w-6 h-6" />
+          </button>
+          <h2 className="text-2xl font-bold text-stone-900">
+            {editingSet ? '단어장 수정하기' : '새 단어장 만들기'}
+          </h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <button 
+            onClick={downloadSample}
+            className="flex items-center gap-2 text-xs font-bold text-stone-400 hover:text-stone-600 transition-colors uppercase tracking-widest"
+          >
+            <Download className="w-4 h-4" />
+            샘플 양식
+          </button>
+          <button 
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-2 bg-stone-100 hover:bg-stone-200 text-stone-700 px-4 py-2 rounded-xl text-sm font-bold transition-all"
+          >
+            <Upload className="w-4 h-4" />
+            엑셀 업로드
+          </button>
+          <input 
+            type="file" 
+            ref={fileInputRef} 
+            onChange={handleFileUpload} 
+            accept=".xlsx, .xls, .csv" 
+            className="hidden" 
+          />
+        </div>
       </div>
 
       <div className="bg-white p-8 rounded-3xl border border-stone-100 shadow-sm space-y-6">
@@ -470,8 +591,18 @@ function CreateWordSet({ userId, onBack }: any) {
         </div>
 
         <div className="space-y-4">
-          <label className="text-sm font-bold text-stone-400 uppercase tracking-widest block">단어 목록</label>
-          <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-bold text-stone-400 uppercase tracking-widest block">단어 목록 ({words.length})</label>
+            {words.length > 0 && (
+              <button 
+                onClick={() => setWords([{ word: '', meaning: '' }])}
+                className="text-xs font-bold text-red-400 hover:text-red-600 transition-colors uppercase tracking-widest"
+              >
+                전체 삭제
+              </button>
+            )}
+          </div>
+          <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
             {words.map((word, index) => (
               <div key={index} className="flex gap-3 items-center">
                 <div className="flex-1 grid grid-cols-2 gap-3">
@@ -490,14 +621,12 @@ function CreateWordSet({ userId, onBack }: any) {
                     className="p-3 bg-stone-50 border border-stone-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:bg-white transition-all"
                   />
                 </div>
-                {words.length > 1 && (
-                  <button 
-                    onClick={() => removeWord(index)}
-                    className="p-2 text-stone-300 hover:text-red-500 transition-colors"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
-                )}
+                <button 
+                  onClick={() => removeWord(index)}
+                  className="p-2 text-stone-300 hover:text-red-500 transition-colors"
+                >
+                  <Trash2 className="w-5 h-5" />
+                </button>
               </div>
             ))}
           </div>
@@ -506,7 +635,7 @@ function CreateWordSet({ userId, onBack }: any) {
             className="w-full py-4 border-2 border-dashed border-stone-200 rounded-2xl text-stone-400 font-bold hover:bg-stone-50 hover:border-stone-300 transition-all flex items-center justify-center gap-2"
           >
             <Plus className="w-5 h-5" />
-            단어 추가
+            단어 직접 추가
           </button>
         </div>
 
@@ -516,7 +645,7 @@ function CreateWordSet({ userId, onBack }: any) {
             disabled={loading}
             className="bg-emerald-600 hover:bg-emerald-700 disabled:bg-stone-200 text-white px-10 py-4 rounded-2xl font-bold transition-all shadow-lg shadow-emerald-200"
           >
-            {loading ? '저장 중...' : '단어장 저장하기'}
+            {loading ? '저장 중...' : editingSet ? '수정사항 저장하기' : '단어장 저장하기'}
           </button>
         </div>
       </div>
